@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use core::panic;
 use libflate::gzip::{Decoder, Encoder};
 
 use std::fmt::Display;
@@ -903,10 +902,10 @@ pub enum SpecialColorID {
     CopyPlayerColor1 = 1005,
     CopyPlayerColor2 = 1006,
     LightBackground = 1007,
-    GRND2 = 1009,
-    BLACK = 1010,
-    WHITE = 1011,
-    LIGHTER = 1012,
+    Ground2 = 1009,
+    Black = 1010,
+    White = 1011,
+    Lighter = 1012,
 }
 
 use std::collections::BTreeMap;
