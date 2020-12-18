@@ -42,12 +42,16 @@ const IGNORE_KEYS: [&str; 10] = [
     "k36", "k85", "k86", "k87", "k88", "k19", "k89", "k71", "k90", "k34",
 ];
 
-const LEVELS_END: &str = "LLM_02";
+const DICT_START: &str = "LLM_01";
+const DICT_END: &str = "LLM_02";
+const LEVEL_DICT_HEADER: &str = "_isArr";
+
 const LEVEL_DICT_START: &str = "k_";
 const FINAL_LEVEL_KEY: &str = "kI6";
-const COLOR_CHANNEL_KEY: &str = "kS38";
+const LEVEL_HEADER: &str = "kCEK";
 
 const LS_HEADER: &str = "H4sIAAAAAAAAC";
+const LS_COLOR_CHANNEL_KEY: &str = "kS38";
 const LS_OBJ_DELIMITER: &str = ";";
 const LS_COLOR_CHANNEL_DELIMITER: &str = "|";
 const LS_ENTRY_DELIMITER: &str = ",";
@@ -95,7 +99,6 @@ impl<P: AsRef<Path>> LevelsGamesave<P> {
 
     pub fn decrypt_local_levels(&mut self) {
         let data = std::fs::read_to_string(self.path.as_ref()).expect(IO_ERROR_MESSAGE);
-        println!("{:?}", data.as_bytes().len());
 
         let xor = self.xor_data(data.as_bytes().to_vec(), 11);
         let replaced = String::from_utf8(xor)
@@ -118,7 +121,7 @@ impl<P: AsRef<Path>> LevelsGamesave<P> {
             match xml_reader.read_event(&mut buf) {
                 Ok(Event::Text(bt)) => {
                     let current = bt.unescape_and_decode(&xml_reader).unwrap();
-                    let is_end = current.starts_with(LEVELS_END);
+                    let is_end = current.starts_with(DICT_END);
                     if current.starts_with(LEVEL_DICT_START) || is_end {
                         read_level = !is_end;
                         if !data_temp.is_empty() {
@@ -183,24 +186,25 @@ impl<P: AsRef<Path>> LevelsGamesave<P> {
         for level in self.levels.iter_mut() {
             match level {
                 GamesaveLevel::Parsed(to_push) => ret.push(to_push),
-                GamesaveLevel::Unparsed(_) => {}
+                _ => {}
             }
         }
 
         ret
     }
 
-    pub fn parse_level(&mut self, idx: usize) {
-        let to_parse = match &(self.levels[idx]) {
-            GamesaveLevel::Parsed(_) => return,
+    pub fn parse_level(&mut self, idx: usize) -> &mut Level {
+        let mut_levels_ref = &mut self.levels[idx];
+        let to_parse = match mut_levels_ref {
             GamesaveLevel::Unparsed(data) => data,
+            GamesaveLevel::Parsed(level_ret) => return level_ret,
         };
 
         let mut temp_key = String::new();
         let mut entries: Vec<LevelEntry> = Vec::new();
 
         for curr in to_parse {
-            if curr.eq(FINAL_LEVEL_KEY) {
+            if curr == FINAL_LEVEL_KEY {
                 break;
             }
             let curr_value = curr.to_string();
@@ -217,8 +221,11 @@ impl<P: AsRef<Path>> LevelsGamesave<P> {
                 temp_key = String::new();
             }
         }
-
-        self.levels[idx] = GamesaveLevel::Parsed(Level::from(entries));
+        *mut_levels_ref = GamesaveLevel::Parsed(Level::from(entries));
+        match mut_levels_ref {
+            GamesaveLevel::Parsed(level_ret) => return level_ret,
+            _ => panic!(), //unreachable
+        }
     }
 
     pub fn parse_all(&mut self) {
@@ -227,7 +234,21 @@ impl<P: AsRef<Path>> LevelsGamesave<P> {
         }
     }
 
-    pub fn count(&self) -> usize {
+    pub fn level_at(&self, idx: usize) -> Option<&Level> {
+        match &self.levels[idx] {
+            GamesaveLevel::Parsed(ret) => Some(ret),
+            _ => None,
+        }
+    }
+
+    pub fn level_at_mut(&mut self, idx: usize) -> Option<&mut Level> {
+        match &mut self.levels[idx] {
+            GamesaveLevel::Parsed(ret) => Some(ret),
+            _ => None,
+        }
+    }
+
+    pub fn count_levels(&self) -> usize {
         self.levels.len()
     }
 
@@ -254,8 +275,18 @@ pub(super) mod xml_write {
 
     pub(crate) type XMLWriter = Writer<Cursor<Vec<u8>>>;
 
+    const XML_VERSION: &str = "1.0";
+    const PLIST_VERSION: &str = "1.0";
+    const GJ_VERSION: &str = "2.0";
+
     const UNKNOWN_KEY_ERROR: &str = "Unknown key error! Unable to retrieve type for key ";
     const XML_BOOLEAN_IDENTIFIER: &str = "XML_BOOL";
+
+    const STRING_TYPE: &str = "s";
+    const INTEGER_TYPE: &str = "i";
+    const R_INTEGER_TYPE: &str = "r";
+    const DICT_TYPE: &str = "d";
+    const BOOLEAN_TRUE: &str = "t /";
 
     const FOOTER_END: i32 = 12;
 
@@ -277,13 +308,13 @@ pub(super) mod xml_write {
                             write_key(writer, key)?;
 
                             //write kI6 dict open
-                            writer.write_event(Event::Start(BytesStart::owned_name("d")))?;
+                            writer.write_event(Event::Start(BytesStart::owned_name(DICT_TYPE)))?;
                             write_key(writer, value)?;
 
                             kI6_detected = true;
                         } else if kI6_detected {
                             //hardcoded because this way it's efficient
-                            write_value_with_type(writer, "s", key)?;
+                            write_value_with_type(writer, STRING_TYPE, key)?;
                             write_key(writer, value)?;
                         } else {
                             if super::IGNORE_KEYS.contains(&key.as_str()) {
@@ -301,9 +332,9 @@ pub(super) mod xml_write {
 
                     //length of vec_value is always even, add last entry value to kI6 in order to not cut it
                     //<s>0</s>
-                    write_value_with_type(writer, "s", "0")?;
+                    write_value_with_type(writer, STRING_TYPE, "0")?;
                     //write kI6 dict close
-                    writer.write_event(Event::End(BytesEnd::borrowed(b"d")))?;
+                    writer.write_event(Event::End(BytesEnd::borrowed(DICT_TYPE.as_bytes())))?;
                 }
                 GamesaveLevel::Parsed(to_pack) => {
                     //write level data
@@ -334,23 +365,31 @@ pub(super) mod xml_write {
 
         fn write_level_data(writer: &mut XMLWriter, to_pack: &Level) -> quick_xml::Result<()> {
             //write first entry: header
-            write_key(writer, "kCEK")?;
-            write_value_with_type(writer, "i", "4")?;
+            write_key(writer, super::LEVEL_HEADER)?;
+            write_value_with_type(writer, INTEGER_TYPE, "4")?;
 
             //write name
             write_key(writer, "k2")?;
-            write_value_with_type(writer, "s", to_pack.name.as_str())?;
+            write_value_with_type(writer, STRING_TYPE, to_pack.name.as_str())?;
 
             //write description
             write_key(writer, "k3")?;
-            write_value_with_type(writer, "s", to_pack.description.to_string().as_str())?;
+            write_value_with_type(
+                writer,
+                STRING_TYPE,
+                to_pack.description.to_string().as_str(),
+            )?;
 
             //write level string
             write_key(writer, "k4")?;
-            write_value_with_type(writer, "s", to_pack.level_string.to_string().as_str())?;
+            write_value_with_type(
+                writer,
+                STRING_TYPE,
+                to_pack.level_string.to_string().as_str(),
+            )?;
             //write level author
             write_key(writer, "k5")?;
-            write_value_with_type(writer, "s", to_pack.author.to_string().as_str())?;
+            write_value_with_type(writer, STRING_TYPE, to_pack.author.to_string().as_str())?;
 
             Ok(())
         }
@@ -359,25 +398,25 @@ pub(super) mod xml_write {
             //write kI6 key
             write_key(writer, super::FINAL_LEVEL_KEY)?;
             //write dict open
-            writer.write_event(Event::Start(BytesStart::owned_name("d")))?;
+            writer.write_event(Event::Start(BytesStart::owned_name(DICT_TYPE)))?;
 
             //write footer
             for key in 0..(FOOTER_END + 1) {
                 write_key(writer, key.to_string().as_str())?;
-                write_value_with_type(writer, "s", "0")?;
+                write_value_with_type(writer, STRING_TYPE, "0")?;
             }
 
             //write dict close
-            writer.write_event(Event::End(BytesEnd::borrowed(b"d")))?;
+            writer.write_event(Event::End(BytesEnd::borrowed(DICT_TYPE.as_bytes())))?;
             Ok(())
         }
 
         fn get_type<'a>(key: &str) -> &'a str {
             match key {
-                "kCEK" | "k21" | "k16" | "k18" | "k48" | "k50" | "k80" => "i",
-                "k2" | "k3" | "k4" | "k5" => "s",
+                super::LEVEL_HEADER | "k21" | "k16" | "k18" | "k48" | "k50" | "k80" => INTEGER_TYPE,
+                "k2" | "k3" | "k4" | "k5" => STRING_TYPE,
                 "k13" | "k47" => XML_BOOLEAN_IDENTIFIER,
-                "kI1" | "kI2" | "kI3" => "r",
+                "kI1" | "kI2" | "kI3" => R_INTEGER_TYPE,
                 _ => {
                     eprintln!("{} {}", UNKNOWN_KEY_ERROR, key);
                     "ERROR"
@@ -394,16 +433,12 @@ pub(super) mod xml_write {
     }
 
     pub(crate) fn write_header_start(writer: &mut XMLWriter) -> quick_xml::Result<()> {
-        let version = "1.0";
-        let plist_version = "1.0";
-        let gj_ver = "2.0";
-
-        let decl = BytesDecl::new(version.as_bytes(), None, None);
+        let decl = BytesDecl::new(XML_VERSION.as_bytes(), None, None);
         writer.write_event(Event::Decl(decl))?;
 
         let mut plist = BytesStart::owned_name("plist");
-        plist.push_attribute(("version", plist_version));
-        plist.push_attribute(("gjver", gj_ver));
+        plist.push_attribute(("version", PLIST_VERSION));
+        plist.push_attribute(("gjver", GJ_VERSION));
         writer.write_event(Event::Start(plist))?;
 
         Ok(())
@@ -412,14 +447,14 @@ pub(super) mod xml_write {
         writer.write_event(Event::Start(BytesStart::owned_name("dict")))?;
 
         //write levels
-        write_key(writer, "LLM_01")?;
-        writer.write_event(Event::Start(BytesStart::owned_name("d")))?;
+        write_key(writer, super::DICT_START)?;
+        writer.write_event(Event::Start(BytesStart::owned_name(DICT_TYPE)))?;
         write_levels_dict(writer, levels)?;
-        writer.write_event(Event::End(BytesEnd::borrowed(b"d")))?;
+        writer.write_event(Event::End(BytesEnd::borrowed(DICT_TYPE.as_bytes())))?;
 
         //write end part
-        write_key(writer, "LLM_02")?;
-        write_value_with_type(writer, "i", "35")?;
+        write_key(writer, super::DICT_END)?;
+        write_value_with_type(writer, INTEGER_TYPE, "35")?;
 
         writer.write_event(Event::End(BytesEnd::borrowed(b"dict")))?;
         Ok(())
@@ -429,19 +464,17 @@ pub(super) mod xml_write {
         writer: &mut XMLWriter,
         levels: &Vec<GamesaveLevel>,
     ) -> quick_xml::Result<()> {
-        write_key(writer, "_isArr")?;
-        writer.write_event(Event::Start(BytesStart::owned_name("t /")))?;
+        write_key(writer, super::LEVEL_DICT_HEADER)?;
+        writer.write_event(Event::Start(BytesStart::owned_name(BOOLEAN_TRUE)))?;
 
-        let mut idx = 0;
-        for level in levels {
+        for idx in 0..levels.len() {
+            let level = &levels[idx];
             write_key(writer, format!("{}{}", "k_", idx).as_str())?;
-            writer.write_event(Event::Start(BytesStart::owned_name("d")))?;
+            writer.write_event(Event::Start(BytesStart::owned_name(DICT_TYPE)))?;
 
             //write level
             level.write_to_xml(writer)?;
-
-            writer.write_event(Event::End(BytesEnd::borrowed(b"d")))?;
-            idx += 1;
+            writer.write_event(Event::End(BytesEnd::borrowed(DICT_TYPE.as_bytes())))?;
         }
 
         Ok(())
@@ -486,7 +519,7 @@ pub(super) mod xml_write {
         //if type is XML_BOOLEAN_IDENTIFIER write <t />, else write value
         match value_type {
             XML_BOOLEAN_IDENTIFIER => {
-                writer.write_event(Event::Start(BytesStart::owned_name("t /")))?
+                writer.write_event(Event::Start(BytesStart::owned_name(BOOLEAN_TRUE)))?
             }
             _ => write_value_with_type(writer, value_type, value)?,
         };
@@ -521,14 +554,16 @@ impl<T: Default> Default for Base64Data<T> {
     }
 }
 
+const LEVEL_STRING_STRUCT_PATH: &str = "gd_lang::gamesave::LevelString";
+
 impl<T: PrepareForEncryption> Display for Base64Data<T> {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let result = match self {
             Base64Data::Encoded(encrypted_data) => encrypted_data.to_string(),
             Base64Data::Decoded(value) => {
                 let mut result = base64::encode(&value.prepare_for_encryption()[..]);
-                let is_level_string =
-                    std::any::type_name::<T>() == "gd_lang::gamesave::LevelString";
+                let is_level_string = std::any::type_name::<T>() == LEVEL_STRING_STRUCT_PATH;
+
                 if is_level_string {
                     result = LS_HEADER.to_string()
                         + &(result.replace("+", "-").replace("/", "_"))[LS_HEADER.len()..];
@@ -542,11 +577,11 @@ impl<T: PrepareForEncryption> Display for Base64Data<T> {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct Level {
-    pub name: String,
+    name: String,
     author: String,
-    pub description: Base64Data<String>,
+    description: Base64Data<String>,
     level_string: Base64Data<LevelString>,
     entries: Vec<LevelEntry>,
 }
@@ -583,7 +618,7 @@ impl Level {
         let mut to_add_entries = Vec::new();
         for (key, value) in entries {
             match key.as_str() {
-                "kCEK" => {}
+                LEVEL_HEADER => {}
                 "k2" => ret.name = value,
                 "k3" => ret.description = Base64Data::Encoded(value),
                 "k4" => ret.level_string = Base64Data::Encoded(value),
@@ -606,7 +641,7 @@ impl Level {
                 });
                 self.description = Base64Data::Decoded(String::from_utf8(decoded).unwrap());
             }
-            Base64Data::Decoded(_) => {}
+            _ => {}
         }
     }
 
@@ -639,15 +674,62 @@ impl Level {
                 let decrypted_ls = LevelString::from(String::from_utf8(decoded).unwrap());
                 self.level_string = Base64Data::Decoded(decrypted_ls);
             }
-            Base64Data::Decoded(_) => {}
+            _ => {}
         }
     }
 
-    pub fn get_ls_if_parsed(&mut self) -> Option<&mut LevelString> {
+    pub fn get_ls_if_parsed(&self) -> Option<&LevelString> {
+        match &self.level_string {
+            Base64Data::Decoded(ret) => Some(ret),
+            _ => None,
+        }
+    }
+
+    pub fn get_ls_if_parsed_mut(&mut self) -> Option<&mut LevelString> {
         match &mut self.level_string {
             Base64Data::Decoded(ret) => Some(ret),
-            Base64Data::Encoded(_) => None,
+            _ => None,
         }
+    }
+
+    pub fn get_description_if_parsed(&self) -> Option<&String> {
+        match &self.description {
+            Base64Data::Decoded(ret) => Some(ret),
+            _ => None,
+        }
+    }
+
+    pub fn get_description_if_parsed_mut(&mut self) -> Option<&mut String> {
+        match &mut self.description {
+            Base64Data::Decoded(ret) => Some(ret),
+            _ => None,
+        }
+    }
+
+    pub fn name(&self) -> &String {
+        &self.name
+    }
+
+    pub fn name_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+
+    pub fn author(&self) -> &String {
+        &self.author
+    }
+
+    pub fn additional_entries(&self) -> &Vec<LevelEntry> {
+        &self.entries
+    }
+
+    pub fn additional_entries_mut(&mut self) -> &mut Vec<LevelEntry> {
+        &mut self.entries
+    }
+}
+
+impl Default for Level {
+    fn default() -> Level {
+        Level::empty()
     }
 }
 
@@ -689,7 +771,7 @@ impl LevelString {
             skip += 1;
 
             match key {
-                COLOR_CHANNEL_KEY => {
+                LS_COLOR_CHANNEL_KEY => {
                     //color channels
                     let mut to_split = value.to_string();
                     to_split.pop();
@@ -725,7 +807,7 @@ impl LevelString {
 
 impl Display for LevelString {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut data = COLOR_CHANNEL_KEY.to_string() + LS_ENTRY_DELIMITER;
+        let mut data = LS_COLOR_CHANNEL_KEY.to_string() + LS_ENTRY_DELIMITER;
         data.push_str(
             self.color_channels
                 .join(LS_COLOR_CHANNEL_DELIMITER)
@@ -782,14 +864,14 @@ impl PrepareForEncryption for String {
     }
 }
 
-pub type LevelObjectKey = u16;
+pub type LevelObjectKey = usize;
 pub type LevelObjectMap = BTreeMap<LevelObjectKey, LevelObjectValue>;
 
 #[derive(Debug)]
 pub enum LevelObjectValue {
-    Integer(i32),
+    Integer(i16),
     Float(f32),
-    GroupIDs(Vec<i32>),
+    GroupIDs(Vec<i16>),
     String(String),
     Boolean(bool),
 }
@@ -812,14 +894,62 @@ impl Display for LevelObjectValue {
     }
 }
 
+pub enum SpecialColorID {
+    Background = 1000,
+    Ground = 1001,
+    Line = 1002,
+    Line3D = 1003,
+    Object = 1004,
+    CopyPlayerColor1 = 1005,
+    CopyPlayerColor2 = 1006,
+    LightBackground = 1007,
+    GRND2 = 1009,
+    BLACK = 1010,
+    WHITE = 1011,
+    LIGHTER = 1012,
+}
+
 use std::collections::BTreeMap;
 
-#[derive(Default, Debug)]
+const EMPTY_LEVELOBJ_ID: i16 = 1;
+const EMPTY_LEVELOBJ_POS: (f32, f32) = (0.0, 0.0);
+const EMPTY_LEVELOBJ_COLOR_ID: i16 = SpecialColorID::Object as i16;
+
+#[derive(Debug)]
 pub struct LevelObject {
-    pub properties: LevelObjectMap,
+    properties: LevelObjectMap,
 }
 
 impl LevelObject {
+    pub fn empty() -> LevelObject {
+        LevelObject::new(
+            EMPTY_LEVELOBJ_ID,
+            EMPTY_LEVELOBJ_POS,
+            EMPTY_LEVELOBJ_COLOR_ID,
+            vec![],
+        )
+    }
+
+    pub fn new(object_id: i16, pos: (f32, f32), color_id: i16, group_ids: Vec<i16>) -> LevelObject {
+        let (x, y) = pos;
+
+        //create entries map
+        let mut map: LevelObjectMap = vec![
+            (1, LevelObjectValue::Integer(object_id)),
+            (2, LevelObjectValue::Float(x)),
+            (3, LevelObjectValue::Float(y)),
+            (21, LevelObjectValue::Integer(color_id)),
+        ]
+        .into_iter()
+        .collect();
+
+        if !group_ids.is_empty() {
+            map.insert(57, LevelObjectValue::GroupIDs(group_ids));
+        }
+
+        LevelObject { properties: map }
+    }
+
     pub fn from(object_string: String) -> LevelObject {
         let split_iter = object_string.split(LS_ENTRY_DELIMITER);
 
@@ -828,7 +958,8 @@ impl LevelObject {
             .step_by(2)
             .zip(split_iter.skip(1).step_by(2))
             .fold(BTreeMap::new(), |mut ret, (key, value)| {
-                let parsed_key: u16;
+                let parsed_key: LevelObjectKey;
+
                 match key.parse() {
                     Ok(value_ok) => parsed_key = value_ok,
                     Err(err) => {
@@ -851,12 +982,12 @@ impl LevelObject {
 
     fn parse_from_key(
         map: &mut LevelObjectMap,
-        parsed_key: u16,
+        parsed_key: LevelObjectKey,
         value: &str,
     ) -> Result<(), String> {
         match parsed_key {
             //integer key
-            1 | 20 | 21 | 22 | 24 | 25 | 61 | 180 => match value.parse::<i32>() {
+            1 | 20 | 21 | 22 | 24 | 25 | 61 | 180 => match value.parse::<i16>() {
                 Ok(parsed_value) => {
                     map.insert(parsed_key, LevelObjectValue::Integer(parsed_value));
                 }
@@ -874,7 +1005,7 @@ impl LevelObject {
                 let mut to_insert = Vec::new();
 
                 for group in value.split(".") {
-                    match group.parse::<i32>() {
+                    match group.parse::<i16>() {
                         Ok(parsed_group) => to_insert.push(parsed_group),
                         Err(err) => return Err(err.to_string()),
                     }
@@ -899,22 +1030,37 @@ impl LevelObject {
 
         Ok(())
     }
+
+    pub fn properties(&self) -> &LevelObjectMap {
+        &self.properties
+    }
+
+    pub fn properties_mut(&mut self) -> &mut LevelObjectMap {
+        &mut self.properties
+    }
 }
 
 impl Display for LevelObject {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let result: Vec<String> = self
-            .properties
+        let mut result = self
+            .properties()
             .iter()
-            .map(|(key, value)| {
-                let mut ret = key.to_string();
+            .fold(String::new(), |mut ret, (key, value)| {
+                ret.push_str(key.to_string().as_str());
                 ret.push_str(LS_ENTRY_DELIMITER);
                 ret.push_str(value.to_string().as_str());
+                ret.push_str(LS_ENTRY_DELIMITER);
 
                 ret
-            })
-            .collect();
+            });
 
-        fmt.write_str(result.join(LS_ENTRY_DELIMITER).as_str())
+        result.pop();
+        fmt.write_str(result.as_str())
+    }
+}
+
+impl Default for LevelObject {
+    fn default() -> Self {
+        LevelObject::empty()
     }
 }
